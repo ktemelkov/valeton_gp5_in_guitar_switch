@@ -13,4 +13,6 @@ uint8_t valeton_gp5_decode_preset_no(const uint8_t* buffer, int len);
 
 int valeton_gp5_msg_offset(const uint8_t* buffer, int len);
 
+uint8_t* valeton_gp5_preset_change_request(uint8_t preset_no, int& out_size);
+
 #endif // VALETON_GP5_COMM_H

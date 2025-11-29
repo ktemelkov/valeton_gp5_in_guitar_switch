@@ -1,8 +1,12 @@
+#include <Arduino.h>
 #include <NimBLEDevice.h>
 #include "valeton_gp5_comm.h"
+#include "guitar_switch.h"
 
-#define ENABLE_DEBUG_MESSAGES
 #include "debug.h"
+
+#define SWITCH_PIN1 2
+#define SWITCH_PIN2 3
 
 // Target 128-bit Service and Characteristic UUIDs
 static const char *Valeton_Service_UUID_Str = "03B80E5A-EDE8-4B33-A751-6CE34EC4C700";
@@ -19,12 +23,15 @@ static const char *Valeton_Char_UUID_Str = "7772E5DB-3868-4112-A1A9-F2669D106BF3
 #define EVENT_DEVICE_DISCONNECTED 3
 #define EVENT_DEVICE_NOTIFY 4
 #define EVENT_STATE_ENTERED 5
+#define EVENT_PRESET_CHANGED 6
 
 static int currentState = STATE_INIT;
 static int currentEvent = EVENT_IDLE;
 static void *eventData = nullptr;
 
 static NimBLERemoteCharacteristic *sysExChannel = nullptr;
+static GuitarSwitch guitarSwitch(SWITCH_PIN1, SWITCH_PIN2);
+static int gp5PresetNo = 0;
 
 /**
  *
@@ -97,24 +104,52 @@ class ClientCallbacksImpl : public NimBLEClientCallbacks
  */
 void deviceNotifyCB(NimBLERemoteCharacteristic *pRemoteCharacteristic, uint8_t *pData, size_t length, bool /* isNotify */)
 {
-  // F0 09 0D 00 01 00 00 00 06 01 02 04 03 00 0B 00 00 00 00 00 00 F7
-  // F0 0F 0F 00 01 00 00 00 06 01 02 04 03 00 0C 00 00 00 00 00 00 F7 -> preset data response
-  // F0 0E 02 00 01 00 00 00 06 01 02 01 0B 00 01 00 00 00 00 00 00 F7 -> preset change response
-  // F0 0B 02 00 01 00 00 00 03 01 04 00 08 00 00 F7 -> status response
-  // F0 08 08 00 01 00 00 00 0A 01 02 01 01 00 02 00 02 00 04 00 00 04 0E 00 00 00 00 00 00 F7 -> button press response
-  //
-
-  DEBUG_MSG("%s", "Notification/Indication received.\n");
+  DEBUG_MSG("%s", "\nNotification/Indication received.\n");
   DEBUG_BUFFER(pData, length);
 
   // Process the response/status data sent by the GP-5 here.
   uint8_t op = valeton_gp5_decode_op(pData, length);
   uint8_t preset_no = valeton_gp5_decode_preset_no(pData, length);
 
-  if (op == 0x43) // Preset change notification
+  if (op == 0x43 && preset_no != 0xFF) // Preset change notification
   {
-    DEBUG_MSG("Preset changed to #: %d\n", preset_no);
+    DEBUG_MSG("Preset changed to #%d\n", preset_no);
+
+    gp5PresetNo = preset_no;
+    fireEvent(EVENT_PRESET_CHANGED);
   }
+}
+
+/**
+ *
+ */
+int selectTargetPreset(SwitchPosition position, int currentPresetNo)
+{
+  if (currentPresetNo > 89)
+  {
+    return currentPresetNo;
+  }
+
+  int bank = currentPresetNo / 30;
+  int presetIndex = currentPresetNo % 30;
+
+  int sect = presetIndex / 10;
+  int indexInSect = presetIndex % 10;
+
+  if (position == TOP)
+  {
+    sect = 0;
+  }
+  else if (position == MIDDLE)
+  {
+    sect = 1;
+  }
+  else if (position == BOTTOM)
+  {
+    sect = 2;
+  }
+
+  return currentPresetNo = bank * 30 + sect * 10 + indexInSect;
 }
 
 /**
@@ -250,8 +285,12 @@ void handle_connecting(int event, void *data)
  */
 void handle_connected(int event, void *data)
 {
+  static time_t requestTimer = 0;
+
   if (event == EVENT_STATE_ENTERED)
   {
+    requestTimer = millis();
+
     int len = 0;
     uint8_t *buff = valeton_gp5_current_preset_request(len);
     sysExChannel->writeValue(buff, len, false);
@@ -262,6 +301,39 @@ void handle_connected(int event, void *data)
   else if (event == EVENT_DEVICE_DISCONNECTED)
   {
     setState(STATE_INIT);
+  }
+  else if (event == EVENT_PRESET_CHANGED)
+  {
+    requestTimer = 0;
+  }
+  else if (event == EVENT_IDLE && requestTimer != 0 && (millis() - requestTimer) >= 2000)
+  {
+    DEBUG_MSG("%s", "\nSysEx request timed out.\n");
+
+    requestTimer = 0;
+  }
+  else if (event == EVENT_IDLE && requestTimer == 0)
+  {
+    // Check switch states and send preset change if needed
+    int targetPresetNo = selectTargetPreset(guitarSwitch.getPosition(), gp5PresetNo);
+
+    if (targetPresetNo != gp5PresetNo)
+    {
+      requestTimer = millis();
+
+      int len = 0;
+      uint8_t *buff = valeton_gp5_preset_change_request(targetPresetNo, len);
+      sysExChannel->writeValue(buff, len, false);
+
+      DEBUG_MSG("Sent preset change to #%d SysEx message to Valeton GP-5.\n", targetPresetNo);
+      DEBUG_BUFFER(buff, len);
+
+      buff = valeton_gp5_current_preset_request(len);
+      sysExChannel->writeValue(buff, len, false);
+
+      DEBUG_MSG("%s", "Sent current preset query SysEx message to Valeton GP-5.\n");
+      DEBUG_BUFFER(buff, len);
+    }
   }
 }
 
@@ -279,6 +351,8 @@ void setup()
   NimBLEDevice::setSecurityIOCap(BLE_HS_IO_NO_INPUT_OUTPUT);
   NimBLEDevice::setSecurityAuth(false, false, true);
   NimBLEDevice::setPower(ESP_PWR_LVL_P9); /** +9db */
+
+  guitarSwitch.begin();
 }
 
 /**
@@ -286,6 +360,8 @@ void setup()
  */
 void loop()
 {
+  guitarSwitch.loop();
+
   int event = currentEvent;
   void *data = eventData;
 

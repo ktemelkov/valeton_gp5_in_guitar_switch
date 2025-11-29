@@ -3,6 +3,7 @@
 #include "valeton_gp5_comm.h"
 
 #define VALETON_GP5_TX_TEMP_BUFFER_SIZE 1024
+#define BLE_SYSEX_MESSAGE_PREFIX
 
 static uint8_t TransmitBuffer[VALETON_GP5_TX_TEMP_BUFFER_SIZE];
 
@@ -61,15 +62,21 @@ int valeton_gp5_build_sysex(const uint8_t* buffer, int len, uint8_t type)
     int write_index = 0;
     uint8_t crc;
     int packet_size;
+    int payload_len = len/2 + 1; // number of words (nibbles) + 2 bytes for type
 
     memset((void*)TransmitBuffer, 0, VALETON_GP5_TX_TEMP_BUFFER_SIZE);
 
+#ifdef BLE_SYSEX_MESSAGE_PREFIX
+    TransmitBuffer[write_index++] = 0x80;
+    TransmitBuffer[write_index++] = 0x80;
+#endif
+
+    int padding = write_index;
     // set start marker
-    TransmitBuffer[write_index++] = 0x80;
-    TransmitBuffer[write_index++] = 0x80;
     TransmitBuffer[write_index++] = 0xF0;
 
     // next 2 bytes are Crc, skip for now
+    int crc_index = write_index;
     write_index += 2;
 
     // next 4 bytes are vendor ID??
@@ -79,8 +86,8 @@ int valeton_gp5_build_sysex(const uint8_t* buffer, int len, uint8_t type)
     TransmitBuffer[write_index++] = 0x00;
 
     // length bytes. Value sent as e.g. 0x14 as 01 04
-    TransmitBuffer[write_index++] = len >> 4;
-    TransmitBuffer[write_index++] = len & 0x0F;
+    TransmitBuffer[write_index++] = payload_len >> 4;
+    TransmitBuffer[write_index++] = payload_len & 0x0F;
 
     // 0101 for messages sent to GP5, 0102 for receive??
     // or could be 0101 for requests, 0102 for response and 0104 for status?
@@ -105,11 +112,11 @@ int valeton_gp5_build_sysex(const uint8_t* buffer, int len, uint8_t type)
     packet_size = write_index;
 
     // calc Crc before Midi USB encoding
-    crc = valeton_gp5_crc8(TransmitBuffer + 2, packet_size - 2); // skip initial 0x80,0x80
+    crc = valeton_gp5_crc8(TransmitBuffer + padding, packet_size - padding); // skip initial 0x80,0x80
 
     // Crc value e.g. 0x63 becomes 06,03
-    TransmitBuffer[3] = crc >> 4;
-    TransmitBuffer[4] = crc & 0x0F;
+    TransmitBuffer[crc_index] = crc >> 4;
+    TransmitBuffer[crc_index + 1] = crc & 0x0F;
 
     return packet_size;
 }
@@ -125,13 +132,14 @@ uint8_t* valeton_gp5_current_preset_request(int& out_size)
 
 int valeton_gp5_msg_offset(const uint8_t* buffer, int len)
 {
-    // Find the start of the SysEx message in the buffer
-    for (int i = 0; i < len; i++) 
+    if (len > 1 && buffer[0] == 0xF0) 
     {
-        if (buffer[i] == 0xF0) 
-        {
-            return i;
-        }
+        return 0;
+    }
+
+    if (len > 3 && buffer[0] == 0x80 && buffer[1] == 0x80 && buffer[2] == 0xF0) 
+    {
+        return 2;
     }
 
     return -1; // Not found
@@ -165,4 +173,28 @@ uint8_t valeton_gp5_decode_preset_no(const uint8_t* buffer, int len)
     uint8_t preset_no_low  = buffer[offset + 14] & 0x0F;
 
     return (preset_no_high << 4) | preset_no_low;
+}
+
+
+uint8_t valeton_gp5_decode_payload_length(const uint8_t* buffer, int len) 
+{
+    int offset = valeton_gp5_msg_offset(buffer, len);
+    if (offset < 0 || (offset + 14) >= len) 
+    {
+        return 0xFF; // Invalid
+    }
+
+    // Preset number is at offset +7 and +8
+    uint8_t preset_no_high = buffer[offset + 7] & 0x0F;
+    uint8_t preset_no_low  = buffer[offset + 8] & 0x0F;
+
+    return (preset_no_high << 4) | preset_no_low;
+}
+
+uint8_t* valeton_gp5_preset_change_request(uint8_t preset_no, int& out_size)
+{
+    uint8_t req[] = { 0x04, 0x03, (uint8_t)((preset_no >> 4) & 0x0F), (uint8_t)(preset_no & 0x0F), 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+    out_size = valeton_gp5_build_sysex((const uint8_t*)req, sizeof(req), 0x01);
+
+    return TransmitBuffer;
 }

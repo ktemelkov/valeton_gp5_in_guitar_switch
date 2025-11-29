@@ -1,6 +1,10 @@
 #ifndef DEBUG_H
 #define DEBUG_H
 
+
+#define ENABLE_DEBUG_MESSAGES
+
+
 #ifdef ENABLE_DEBUG_MESSAGES
 #define DEBUG_MSG(format, ...) Serial.printf(format, __VA_ARGS__)
 #define DEBUG_BUFFER(buffer, len) printHexBuffer(buffer, len)
