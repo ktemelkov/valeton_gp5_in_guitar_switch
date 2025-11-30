@@ -5,8 +5,8 @@
 
 #include "debug.h"
 
-#define SWITCH_PIN1 2
-#define SWITCH_PIN2 3
+#define SWITCH_PIN1 3
+#define SWITCH_PIN2 2
 
 // Target 128-bit Service and Characteristic UUIDs
 static const char *Valeton_Service_UUID_Str = "03B80E5A-EDE8-4B33-A751-6CE34EC4C700";
