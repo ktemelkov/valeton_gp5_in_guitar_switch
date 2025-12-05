@@ -2,6 +2,7 @@
 #include <NimBLEDevice.h>
 #include "valeton_gp5_comm.h"
 #include "guitar_switch.h"
+#include "guitar_encoder.h"
 
 #include "debug.h"
 
@@ -31,7 +32,8 @@ static void *eventData = nullptr;
 
 static NimBLERemoteCharacteristic *sysExChannel = nullptr;
 static GuitarSwitch guitarSwitch(SWITCH_PIN1, SWITCH_PIN2);
-static int gp5PresetNo = 0;
+static GuitarEncoder guitarEncoder(4, 5, 6);
+static int gp5PresetNo = -1;
 
 /**
  *
@@ -149,7 +151,10 @@ int selectTargetPreset(SwitchPosition position, int currentPresetNo)
     sect = 2;
   }
 
-  return currentPresetNo = bank * 30 + sect * 10 + indexInSect;
+  int targetPresetNo = bank * 30 + sect * 10 + indexInSect;
+  int rythmPresetNo = bank * 30 + 10 + indexInSect; // Middle sect is rythm
+
+  return targetPresetNo == currentPresetNo ? rythmPresetNo : targetPresetNo;
 }
 
 /**
@@ -157,7 +162,7 @@ int selectTargetPreset(SwitchPosition position, int currentPresetNo)
  */
 bool connect_valeton_gp5(const NimBLEAdvertisedDevice *advDevice)
 {
-  if (!advDevice->isAdvertisingService(NimBLEUUID(Valeton_Service_UUID_Str)))
+  if (!advDevice->isAdvertisingService(NimBLEUUID(Valeton_Service_UUID_Str)) || advDevice->getName().compare("GP-5 BLE Kalin") != 0)
   {
     return false;
   }
@@ -230,6 +235,42 @@ bool subscribe_valeton_gp5(NimBLEClient *pClient)
 /**
  *
  */
+void requestCurrentPreset()
+{
+  if (!sysExChannel)
+  {
+    return;
+  }
+
+  int len = 0;
+  uint8_t *buff = valeton_gp5_current_preset_request(len);
+  sysExChannel->writeValue(buff, len, false);
+
+  DEBUG_MSG("%s", "Sent current preset query SysEx message to Valeton GP-5.\n");
+  DEBUG_BUFFER(buff, len);
+}
+
+/**
+ *
+ */
+void requestPresetChange(int targetPresetNo)
+{
+  if (!sysExChannel)
+  {
+    return;
+  }
+
+  int len = 0;
+  uint8_t *buff = valeton_gp5_preset_change_request(targetPresetNo, len);
+  sysExChannel->writeValue(buff, len, false);
+
+  DEBUG_MSG("Sent preset change to #%d SysEx message to Valeton GP-5.\n", targetPresetNo);
+  DEBUG_BUFFER(buff, len);
+}
+
+/**
+ *
+ */
 void handle_init(int event, void *data)
 {
   delay(1000);
@@ -290,13 +331,7 @@ void handle_connected(int event, void *data)
   if (event == EVENT_STATE_ENTERED)
   {
     requestTimer = millis();
-
-    int len = 0;
-    uint8_t *buff = valeton_gp5_current_preset_request(len);
-    sysExChannel->writeValue(buff, len, false);
-
-    DEBUG_MSG("%s", "Sent current preset query SysEx message to Valeton GP-5.\n");
-    DEBUG_BUFFER(buff, len);
+    requestCurrentPreset();
   }
   else if (event == EVENT_DEVICE_DISCONNECTED)
   {
@@ -314,25 +349,27 @@ void handle_connected(int event, void *data)
   }
   else if (event == EVENT_IDLE && requestTimer == 0)
   {
+    if (gp5PresetNo == -1)
+    {
+      requestTimer = millis();
+      requestCurrentPreset();
+      return;
+    }
+
     // Check switch states and send preset change if needed
+    if (!guitarEncoder.hasButtonBeenPressed())
+    {
+      return;
+    }
+
     int targetPresetNo = selectTargetPreset(guitarSwitch.getPosition(), gp5PresetNo);
 
     if (targetPresetNo != gp5PresetNo)
     {
       requestTimer = millis();
-
-      int len = 0;
-      uint8_t *buff = valeton_gp5_preset_change_request(targetPresetNo, len);
-      sysExChannel->writeValue(buff, len, false);
-
-      DEBUG_MSG("Sent preset change to #%d SysEx message to Valeton GP-5.\n", targetPresetNo);
-      DEBUG_BUFFER(buff, len);
-
-      buff = valeton_gp5_current_preset_request(len);
-      sysExChannel->writeValue(buff, len, false);
-
-      DEBUG_MSG("%s", "Sent current preset query SysEx message to Valeton GP-5.\n");
-      DEBUG_BUFFER(buff, len);
+      requestPresetChange(targetPresetNo);
+      delay(25);
+      requestCurrentPreset();
     }
   }
 }
@@ -342,8 +379,10 @@ void handle_connected(int event, void *data)
  */
 void setup()
 {
+#ifdef ENABLE_DEBUG_MESSAGES
   Serial.begin(115200);
   delay(1000);
+#endif
 
   DEBUG_MSG("%s", "Starting BLE Client ...\n");
 
@@ -353,6 +392,7 @@ void setup()
   NimBLEDevice::setPower(ESP_PWR_LVL_P9); /** +9db */
 
   guitarSwitch.begin();
+  guitarEncoder.begin();
 }
 
 /**
@@ -360,7 +400,8 @@ void setup()
  */
 void loop()
 {
-  guitarSwitch.loop();
+  guitarSwitch.update();
+  guitarEncoder.update();
 
   int event = currentEvent;
   void *data = eventData;

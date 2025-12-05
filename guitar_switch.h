@@ -3,7 +3,7 @@
 
 #include <Arduino.h>
 #include <stdint.h>
-
+#include "digital.h"
 #include "debug.h"
 
 /**
@@ -16,11 +16,6 @@ enum SwitchPosition
     BOTTOM = 2
 };
 
-enum SwitchContactState
-{
-    OPENED = 0,
-    CLOSED = 1
-};
 
 /**
  *
@@ -44,13 +39,13 @@ public:
         _lastPollTime = millis();
     }
 
-    void loop()
+    void update()
     {
         // Update history buffers
         static time_t lastPollTime = 0;
         time_t now = millis();
 
-        if (now - _lastPollTime >= 10)
+        if (now - _lastPollTime >= 20)
         {
             _lastPollTime = now;
             updateSwitchContact(_pin1, _hist1, _contactState1);
@@ -75,7 +70,7 @@ public:
     }
 
 private:
-    void updateSwitchContact(uint8_t pin, uint8_t &hist, SwitchContactState &contactState)
+    void updateSwitchContact(uint8_t pin, uint8_t &hist, ContactState &contactState)
     {
         hist = (hist << 1) | !digitalRead(pin);
 
@@ -101,8 +96,8 @@ private:
     uint8_t _hist1;
     uint8_t _hist2;    
     time_t _lastPollTime;
-    SwitchContactState _contactState1;
-    SwitchContactState _contactState2;
+    ContactState _contactState1;
+    ContactState _contactState2;
 };
 
 #endif // GUITAR_SWITCH_H
