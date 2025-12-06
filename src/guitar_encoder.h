@@ -18,8 +18,8 @@ public:
 
     void begin()
     {
-        pinMode(_pin1, INPUT_PULLUP);
-        pinMode(_pin2, INPUT_PULLUP);
+        // pinMode(_pin1, INPUT_PULLUP);
+        // pinMode(_pin2, INPUT_PULLUP);
         pinMode(_btnPin, INPUT_PULLUP);
 
         _lastPollTime = millis();

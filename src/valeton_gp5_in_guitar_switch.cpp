@@ -1,13 +1,19 @@
 #include <Arduino.h>
 #include <NimBLEDevice.h>
+#include "esp_pm.h"
+
 #include "valeton_gp5_comm.h"
 #include "guitar_switch.h"
 #include "guitar_encoder.h"
 
 #include "debug.h"
 
-#define SWITCH_PIN1 3
-#define SWITCH_PIN2 2
+#define SWITCH_PIN1 GPIO_NUM_3
+#define SWITCH_PIN2 GPIO_NUM_2
+
+#define ENCODER_PIN1 GPIO_NUM_4
+#define ENCODER_PIN2 GPIO_NUM_5
+#define ENCODER_BUTTON_PIN GPIO_NUM_6
 
 // Target 128-bit Service and Characteristic UUIDs
 static const char *Valeton_Service_UUID_Str = "03B80E5A-EDE8-4B33-A751-6CE34EC4C700";
@@ -32,8 +38,9 @@ static void *eventData = nullptr;
 
 static NimBLERemoteCharacteristic *sysExChannel = nullptr;
 static GuitarSwitch guitarSwitch(SWITCH_PIN1, SWITCH_PIN2);
-static GuitarEncoder guitarEncoder(4, 5, 6);
+static GuitarEncoder guitarEncoder(ENCODER_PIN1, ENCODER_PIN2, ENCODER_BUTTON_PIN);
 static int gp5PresetNo = -1;
+static bool delayOn = false;
 
 /**
  *
@@ -118,6 +125,7 @@ void deviceNotifyCB(NimBLERemoteCharacteristic *pRemoteCharacteristic, uint8_t *
     DEBUG_MSG("Preset changed to #%d\n", preset_no);
 
     gp5PresetNo = preset_no;
+    delayOn = false;
     fireEvent(EVENT_PRESET_CHANGED);
   }
 }
@@ -271,6 +279,29 @@ void requestPresetChange(int targetPresetNo)
 /**
  *
  */
+void requestDelayToggle(bool on)
+{
+  if (!sysExChannel)
+  {
+    return;
+  }
+
+  int len = 0;
+  uint8_t *buff = valeton_gp5_delay_toggle_request(on, len);
+  sysExChannel->writeValue(buff, len, false);
+
+  if (on) {
+    DEBUG_MSG("%s", "Sent delay ON SysEx message to Valeton GP-5.\n");
+  } else {
+    DEBUG_MSG("%s", "Sent delay OFF SysEx message to Valeton GP-5.\n");
+  }
+
+  DEBUG_BUFFER(buff, len);
+}
+
+/**
+ *
+ */
 void handle_init(int event, void *data)
 {
   delay(1000);
@@ -330,18 +361,24 @@ void handle_connected(int event, void *data)
 
   if (event == EVENT_STATE_ENTERED)
   {
-    requestTimer = millis();
-    requestCurrentPreset();
+    if (requestTimer != 0)
+    {
+      requestTimer = 0;
+    } else {
+      requestTimer = millis();
+      requestCurrentPreset();
+    }
   }
   else if (event == EVENT_DEVICE_DISCONNECTED)
   {
+    requestTimer = millis();
     setState(STATE_INIT);
   }
   else if (event == EVENT_PRESET_CHANGED)
   {
     requestTimer = 0;
   }
-  else if (event == EVENT_IDLE && requestTimer != 0 && (millis() - requestTimer) >= 2000)
+  else if (event == EVENT_IDLE && requestTimer != 0 && (millis() - requestTimer) >= 500)
   {
     DEBUG_MSG("%s", "\nSysEx request timed out.\n");
 
@@ -368,8 +405,11 @@ void handle_connected(int event, void *data)
     {
       requestTimer = millis();
       requestPresetChange(targetPresetNo);
-      delay(25);
+      delay(50);
       requestCurrentPreset();
+    } else {
+      requestDelayToggle(delayOn = !delayOn);
+      delay(50);
     }
   }
 }
@@ -379,6 +419,24 @@ void handle_connected(int event, void *data)
  */
 void setup()
 {
+  esp_pm_config_esp32c3_t pm_config;
+  pm_config.max_freq_mhz = 40; // Set maximum CPU frequency to 40 MHz
+  pm_config.min_freq_mhz = 0; // Set minimum CPU frequency to 0 MHz
+  pm_config.light_sleep_enable = true; // Enable light sleep mode
+  
+  esp_pm_configure(&pm_config);
+  gpio_sleep_sel_dis(SWITCH_PIN1);
+  gpio_sleep_sel_dis(SWITCH_PIN2);
+  // gpio_sleep_sel_dis(GPIO_NUM_4);
+  // gpio_sleep_sel_dis(GPIO_NUM_5);
+  gpio_sleep_sel_dis(ENCODER_BUTTON_PIN);
+
+  gpio_wakeup_enable(SWITCH_PIN1, GPIO_INTR_LOW_LEVEL);
+  gpio_wakeup_enable(SWITCH_PIN2, GPIO_INTR_LOW_LEVEL);
+  // gpio_wakeup_enable(GPIO_NUM_4, GPIO_INTR_LOW_LEVEL);
+  // gpio_wakeup_enable(GPIO_NUM_5, GPIO_INTR_LOW_LEVEL);
+  gpio_wakeup_enable(ENCODER_BUTTON_PIN, GPIO_INTR_LOW_LEVEL);
+
 #ifdef ENABLE_DEBUG_MESSAGES
   Serial.begin(115200);
   delay(1000);
@@ -425,5 +483,16 @@ void loop()
     break;
   default:
     break;
+  }
+}
+
+extern "C" void app_main()
+{
+  initArduino();
+  setup();
+
+  while (true)
+  {
+    loop();
   }
 }

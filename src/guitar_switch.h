@@ -42,7 +42,6 @@ public:
     void update()
     {
         // Update history buffers
-        static time_t lastPollTime = 0;
         time_t now = millis();
 
         if (now - _lastPollTime >= 20)
